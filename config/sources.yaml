@@ -1,0 +1,54 @@
+# Danh sach nguon tin. Moi muc la mot adapter (rss | html).
+defaults:
+  max_articles: 15
+
+sources:
+  - name: VnExpress
+    type: rss
+    url: https://vnexpress.net/rss/tin-moi-nhat.rss
+    country: VN
+    language: vi
+
+  - name: Tuoi Tre
+    type: rss
+    url: https://tuoitre.vn/rss/tin-moi-nhat.rss
+    country: VN
+    language: vi
+
+  - name: Thanh Nien
+    type: rss
+    url: https://thanhnien.vn/rss/home.rss
+    country: VN
+    language: vi
+
+  - name: Dan Tri
+    type: rss
+    url: https://dantri.com.vn/rss/home.rss
+    country: VN
+    language: vi
+
+  - name: VietnamNet
+    type: rss
+    url: https://vietnamnet.vn/rss/thoi-su.rss
+    country: VN
+    language: vi
+
+  - name: Nhan Dan
+    type: rss
+    url: https://nhandan.vn/rss/home.rss
+    country: VN
+    language: vi
+
+  # Adapter HTML: dung XPath khai bao trong `selectors`.
+  # Dung khi nguon khong co RSS hoac RSS bi chan.
+  - name: Bao Dau Tu
+    type: html
+    url: https://baodautu.vn/
+    country: VN
+    language: vi
+    max_articles: 10
+    selectors:
+      item: "//article[.//a[@href]]"
+      title: ".//a"
+      link: ".//a/@href"
+      date: ".//time/@datetime"

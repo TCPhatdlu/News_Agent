@@ -1,0 +1,12 @@
+# Hồ sơ cá nhân hoá. Điểm = trọng số chủ đề + nguồn + từ khoá + độ mới + học từ 👍/👎.
+topics:
+  Công nghệ: 1.0
+  Kinh tế: 0.6
+  Giáo dục: 0.4
+sources: {}            # ví dụ: VnExpress: 0.3
+keywords: [ai, chip, chứng khoán]
+blocked: []            # bài chứa từ này sẽ bị ẩn
+hide_sentiment: []     # ví dụ: [negative]
+keyword_weight: 0.8
+recency_weight: 1.0
+half_life_hours: 48

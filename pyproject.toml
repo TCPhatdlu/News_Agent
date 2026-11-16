@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "news-digest-agent"
+version = "1.0.0"
+description = "AI agent that collects news and related documents, summarizes them with a local LLM, and syncs to Lark Base"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "lxml>=5.0",
+    "PyYAML>=6.0",
+    "smolagents[openai]>=1.10",
+]
+
+[project.optional-dependencies]
+report = ["python-docx>=1.1"]
+dev = ["ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+news-agent = "app.cli:main"
+
+[tool.setuptools]
+packages = ["app", "app.adapters"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
