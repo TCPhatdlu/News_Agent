@@ -193,4 +193,3 @@ JSON parsing và fallback heuristic. Toàn bộ test chạy offline (`StaticFetc
 - Tôn trọng bản quyền: chỉ lưu tóm tắt + URL, không sao chép toàn văn ra ngoài.
 - `MAX_DOCUMENT_MB` chặn tải tài liệu quá lớn; tài liệu lưu theo SHA-256 nên trùng nội dung chỉ tốn một bản.
 - Với máy GPU 4 GB VRAM, dùng `qwen2.5:7b` (hoặc `3b`); 14B cần ≥ 11 GB VRAM.
-- Báo cáo: xem `docs/BaoCao_Agent_TongHopTinTuc.docx` (sinh bằng `tools/build_report_docx.py`).
