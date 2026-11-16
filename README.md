@@ -55,6 +55,44 @@ Yêu cầu: Python ≥ 3.11. Ba lựa chọn LLM cho `--llm`:
 
 Không có Ollama vẫn chạy được ở `--llm mock`, và nếu provider nào lỗi thì pipeline tự lùi về heuristic.
 
+### Cài model chạy local (Ollama)
+
+1. **Cài Ollama**
+   - Windows/macOS: tải bộ cài tại <https://ollama.com/download> rồi chạy. Ollama tự chạy nền ở
+     `http://localhost:11434`.
+   - Linux: `curl -fsSL https://ollama.com/install.sh | sh`
+   - Kiểm tra: `ollama --version`
+2. **Tải model** (chọn theo VRAM/RAM của máy):
+
+   | Máy | Model gợi ý | Lệnh |
+   | --- | --- | --- |
+   | GPU ≥ 6 GB hoặc RAM ≥ 16 GB | `qwen2.5:7b` (mặc định, tiếng Việt tốt) | `ollama pull qwen2.5:7b` |
+   | GPU 4 GB / RAM 8 GB | `qwen2.5:3b` | `ollama pull qwen2.5:3b` |
+   | Máy yếu, chỉ CPU | `qwen2.5:1.5b` | `ollama pull qwen2.5:1.5b` |
+   | GPU ≥ 11 GB | `qwen2.5:14b` (chất lượng cao hơn) | `ollama pull qwen2.5:14b` |
+
+   Tùy chọn, cho khử trùng lặp ngữ nghĩa bằng embedding thật: `ollama pull nomic-embed-text`
+   rồi đặt `SEMANTIC_EMBEDDER=ollama` trong `.env`.
+3. **Chạy thử model**: `ollama run qwen2.5:7b "Tóm tắt: giá vàng hôm nay tăng mạnh"` (gõ `/bye` để thoát).
+   Kiểm tra API: `curl http://localhost:11434/api/tags` phải liệt kê model vừa tải.
+4. **Khai báo trong `.env`**:
+
+   ```env
+   LLM_PROVIDER=ollama
+   OLLAMA_BASE_URL=http://localhost:11434
+   OLLAMA_MODEL=qwen2.5:7b      # đúng tên model đã pull
+   OLLAMA_TIMEOUT=120           # tăng lên nếu chạy CPU chậm
+   ```
+5. **Chạy agent**: `python -m app.cli --llm ollama collect --limit 3 --dry-run`
+
+Lỗi thường gặp:
+
+- `connection refused` → Ollama chưa chạy: mở ứng dụng Ollama hoặc chạy `ollama serve`.
+- `model not found` → `OLLAMA_MODEL` khác tên đã pull; xem `ollama list`.
+- Quá chậm / hết bộ nhớ → dùng model nhỏ hơn hoặc tăng `OLLAMA_TIMEOUT`.
+- Ollama chạy máy khác trong mạng LAN → đặt `OLLAMA_HOST=0.0.0.0` trên máy đó và sửa
+  `OLLAMA_BASE_URL=http://<ip-may-do>:11434`.
+
 ## Sử dụng
 
 ```bash
