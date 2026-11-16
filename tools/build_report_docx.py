@@ -198,12 +198,6 @@ def toc(doc: Document):
     entry = doc.add_paragraph()
     entry.paragraph_format.space_after = Pt(6)
     add_field(entry, 'TOC \\o "1-3" \\h \\z \\u', "Nhấn chuột phải → Update Field (F9) để dựng mục lục.")
-    note = doc.add_paragraph()
-    run = note.add_run(
-        "Ghi chú: mục lục là field tự động. Sau khi mở file, bấm Ctrl+A rồi F9 để cập nhật số trang."
-    )
-    set_font(run, size=10)
-    run.font.italic = True
     doc.add_page_break()
 
 
@@ -268,7 +262,8 @@ def build() -> Path:
         "Bóc tách nội dung bài báo, loại bỏ menu/quảng cáo, và phát hiện tài liệu đính kèm (PDF, DOCX, XLSX…).",
         "Dùng AI Agent (smolagents) và LLM cục bộ để tóm tắt, phân loại chủ đề và đánh giá sắc thái.",
         "Lưu trữ có khử trùng lặp hai lớp và đồng bộ kết quả lên Lark Base.",
-        "Cung cấp giao diện dòng lệnh, bộ kiểm thử offline và tài liệu kỹ thuật đầy đủ.",
+        "Cá nhân hóa danh sách tin theo hồ sơ người dùng và phản hồi thích/không thích.",
+        "Cung cấp giao diện dòng lệnh, giao diện web demo, bộ kiểm thử offline và tài liệu kỹ thuật đầy đủ.",
     ]:
         bullet(doc, item)
 
@@ -319,7 +314,9 @@ def build() -> Path:
             ["FR-07", "Khử trùng lặp", "Theo URL và theo content_hash", "app/store.py"],
             ["FR-08", "Đồng bộ Lark Base", "batch_create, có chế độ dry-run", "app/lark.py"],
             ["FR-09", "Tác nhân AI", "Agent tự chọn công cụ theo nhiệm vụ", "app/agent.py"],
-            ["FR-10", "Vận hành CLI", "collect, stats, recent, export, push, ingest-url", "app/cli.py"],
+            ["FR-10", "Vận hành CLI", "collect, stats, recent, export, push, ingest-url, digest, feedback", "app/cli.py"],
+            ["FR-11", "Cá nhân hóa", "Chấm điểm bài theo hồ sơ, học từ phản hồi thích/không thích", "app/personalize.py"],
+            ["FR-12", "Giao diện web", "Duyệt, lọc, tab Dành cho bạn, nút thích/không thích", "app/web.py"],
         ],
         widths=[1.6, 3.5, 7.2, 3.7],
     )
@@ -355,7 +352,8 @@ def build() -> Path:
                     +-> llm.py        |
                     +-> store.py  <---+
                     +-> lark.py
-agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgent)""",
+agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgent)
+web.py, cli.py -> personalize.py -> store.py (đọc bài + phản hồi)""",
         "Hình 2.1. Luồng phụ thuộc giữa các module",
     )
 
@@ -415,8 +413,9 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
     heading(doc, "2.6. Thiết kế cơ sở dữ liệu", 2)
     body(
         doc,
-        "SQLite được chọn vì không cần máy chủ riêng, giao dịch ACID đầy đủ và dễ sao lưu. Ba bảng "
-        "phản ánh ba thực thể của bài toán: bài báo, tài liệu đính kèm và lượt chạy.",
+        "SQLite được chọn vì không cần máy chủ riêng, giao dịch ACID đầy đủ và dễ sao lưu; chế độ WAL "
+        "cho phép CLI và web đọc/ghi đồng thời. Năm bảng phản ánh các thực thể của bài toán: bài báo, "
+        "tài liệu đính kèm, lượt chạy, phản hồi người dùng và các URL đã bỏ qua.",
     )
     table(
         doc,
@@ -425,6 +424,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
             ["articles", "id", "url, title, source, country, language, summary, topics, sentiment, author, published_at, fetched_at, word_count, content_hash, synced_at", "url UNIQUE, content_hash index"],
             ["documents", "id", "url, article_url, kind, mime, size_bytes, local_path, sha256", "url UNIQUE"],
             ["runs", "id", "started_at, finished_at, fetched, inserted, duplicates, failed, documents, status", "log vận hành"],
+            ["feedback", "article_url", "value (+1 / -1), created_at", "mỗi bài tối đa một phản hồi"],
+            ["skipped", "url", "reason, created_at", "bài trùng nội dung hoặc không có thân bài"],
         ],
         widths=[2.6, 2.0, 8.6, 4.2],
     )
@@ -433,7 +434,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         "Khử trùng lặp tiến hành hai lớp. Lớp thứ nhất so URL trước khi tải trang, tiết kiệm băng thông. "
         "Lớp thứ hai so content_hash — băm tiêu đề chuẩn hóa cùng 20.000 ký tự đầu của thân bài — để "
         "phát hiện cùng một sự việc được đăng lại ở nhiều nguồn với URL khác nhau. Chỉ số hash được "
-        "đánh index nên phép so sánh vẫn nhanh khi dữ liệu lớn.",
+        "đánh index nên phép so sánh vẫn nhanh khi dữ liệu lớn. Các URL bị loại ở lớp thứ hai hoặc vì "
+        "không có thân bài được ghi vào bảng skipped, nhờ đó lượt chạy sau không tải lại những trang này.",
     )
 
     heading(doc, "2.7. Thiết kế tích hợp Lark Base", 2)
@@ -441,7 +443,9 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         doc,
         "Lark Base đóng vai trò giao diện biên tập: người dùng lọc, duyệt và theo dõi trạng thái trên "
         "bảng, còn hệ thống ghi dữ liệu qua API. Việc ghi dùng endpoint batch_create, chia lô 500 bản "
-        "ghi mỗi lần gọi để tránh giới hạn kích thước yêu cầu.",
+        "ghi mỗi lần gọi để tránh giới hạn kích thước yêu cầu. Hệ thống chỉ đánh dấu đã đồng bộ những "
+        "lô mà Lark xác nhận thành công; nếu một lô sau bị lỗi thì các lô trước không bị gửi lại, tránh "
+        "tạo bản ghi trùng.",
     )
     table(
         doc,
@@ -460,6 +464,33 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         widths=[4.6, 5.0, 6.4],
     )
 
+    heading(doc, "2.8. Thiết kế cá nhân hóa", 2)
+    body(
+        doc,
+        "Cá nhân hóa được làm bằng hàm chấm điểm thuần túy trên các cột đã có (chủ đề, nguồn, tiêu đề, "
+        "tóm tắt, sắc thái, ngày đăng), không gọi thêm LLM nên kết quả giải thích được và kiểm thử "
+        "được. Hồ sơ tĩnh khai báo trong config/profile.yaml; phần học tự động lấy từ phản hồi "
+        "thích/không thích của người dùng.",
+    )
+    table(
+        doc,
+        ["Thành phần điểm", "Cách tính"],
+        [
+            ["Chủ đề", "Trọng số chủ đề trong hồ sơ + độ lệch học được từ phản hồi"],
+            ["Nguồn", "Trọng số nguồn trong hồ sơ + độ lệch học được"],
+            ["Từ khóa", "Mỗi từ khóa theo dõi xuất hiện (khớp nguyên từ) cộng keyword_weight"],
+            ["Độ mới", "recency_weight × 2^(−tuổi bài / half_life_hours), mặc định giảm một nửa sau 48 giờ"],
+            ["Loại bỏ", "Bài chứa từ khóa chặn, sắc thái bị ẩn hoặc đã bị đánh dấu không thích"],
+        ],
+        widths=[4.0, 12.0],
+    )
+    body(
+        doc,
+        "Mỗi lượt thích hoặc không thích cộng/trừ 0,3 điểm cho từng chủ đề và nguồn của bài, giới hạn "
+        "trong khoảng ±2 để một vài phản hồi không làm lệch hẳn hồ sơ. Kết quả xuất hiện ở tab "
+        "Dành cho bạn của web (kèm điểm và lý do khi rê chuột) và ở lệnh digest.",
+    )
+
     doc.add_page_break()
 
     # -------------------------------------------------------------- Chương III
@@ -475,7 +506,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
             ["Thư viện", "httpx, lxml, PyYAML, smolagents, openai (client), python-docx"],
             ["LLM", "Ollama + qwen2.5:7b (4-bit), hoặc chế độ mock khi không có GPU"],
             ["Lưu trữ", "SQLite (data/news.db), tài liệu tại data/documents/"],
-            ["Kích thước mã nguồn", "11 module Python, 19 kiểm thử tự động"],
+            ["Giao diện", "CLI và web demo (http.server, không cần framework)"],
+            ["Kích thước mã nguồn", "13 module Python chính, 35 kiểm thử tự động"],
         ],
         widths=[5.0, 11.0],
     )
@@ -545,7 +577,7 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
     body(
         doc,
         "Bộ kiểm thử dùng unittest của thư viện chuẩn, không phụ thuộc mạng. Một fetcher tĩnh thay thế "
-        "tầng HTTP, cho phép mô phỏng feed, trang bài và tệp đính kèm. Kết quả chạy: 19/19 test đạt.",
+        "tầng HTTP, cho phép mô phỏng feed, trang bài và tệp đính kèm. Kết quả chạy: 35/35 test đạt.",
     )
     table(
         doc,
@@ -556,6 +588,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
             ["test_llm", "Trích JSON nhiễu, từ chối đầu ra rỗng, heuristic chủ đề/sắc thái", "4"],
             ["test_store", "Chèn và khử trùng lặp, đồng bộ, log lượt chạy", "3"],
             ["test_pipeline", "Chạy đầy đủ, phát hiện trùng, outbox Lark, xuất JSONL", "5"],
+            ["test_personalize", "Chấm điểm, từ khóa nguyên từ, lọc, độ mới, học từ phản hồi, lưu phản hồi", "9"],
+            ["test_review_fixes", "Đồng bộ Lark theo lô, không tải lại bài đã bỏ qua, chuẩn hóa đầu ra LLM, an toàn URL ảnh", "7"],
         ],
         widths=[4.2, 9.8, 2.0],
     )
@@ -567,10 +601,10 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         [
             ["Hiệu năng", "Đạt", "Xử lý tuần tự từng bài; lxml bóc tách dưới 0,1 giây/trang; nút thắt là LLM"],
             ["Độ tin cậy", "Đạt", "Lỗi một nguồn được ghi nhận và bỏ qua; có fallback heuristic"],
-            ["Khả năng bảo trì", "Đạt", "11 module một trách nhiệm; 19 test; kiểu dữ liệu tĩnh"],
-            ["Bảo mật", "Đạt", "Không rời dữ liệu khỏi máy; agent chỉ gọi 4 công cụ; giới hạn dung lượng tải"],
+            ["Khả năng bảo trì", "Đạt", "13 module một trách nhiệm; 35 test; kiểu dữ liệu tĩnh"],
+            ["Bảo mật", "Đạt", "Không rời dữ liệu khỏi máy; agent chỉ gọi 4 công cụ; giới hạn dung lượng tải; web chặn POST khác nguồn gốc"],
             ["Tương thích", "Đạt", "Windows/Linux; Python ≥ 3.11; Lark Base qua HTTPS"],
-            ["Khả năng sử dụng", "Trung bình", "CLI rõ ràng nhưng chưa có giao diện web"],
+            ["Khả năng sử dụng", "Khá", "CLI rõ ràng; web demo có lọc, tìm kiếm và danh sách cá nhân hóa"],
         ],
         widths=[3.6, 2.4, 10.0],
     )
@@ -578,7 +612,9 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
     heading(doc, "3.6. Hạn chế còn tồn tại", 2)
     for item in [
         "Bài dạng video hoặc nội dung tải bằng JavaScript chưa bóc tách được thân văn bản.",
-        "Chưa có giao diện web cho biên tập viên; thao tác hiện tại qua dòng lệnh.",
+        "Web chỉ là bản demo cho một người dùng, chưa có đăng nhập và chưa cho sửa tóm tắt.",
+        "Cá nhân hóa dựa trên chủ đề, nguồn và từ khóa; chưa hiểu ngữ nghĩa nội dung bài.",
+        "Trình tải trang chưa chặn địa chỉ nội bộ khi theo chuyển hướng và chưa đọc robots.txt.",
         "Chất lượng tóm tắt phụ thuộc mô hình; 7B tiết kiệm tài nguyên nhưng kém 14B ở bài dài.",
         "Lịch chạy tự động chưa tích hợp sẵn, cần dùng Task Scheduler hoặc cron.",
     ]:
@@ -595,12 +631,13 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         "Đề tài đã xây dựng hoàn chỉnh một ứng dụng Python thay thế luồng n8n trước đây. Hệ thống thu "
         "thập được tin từ bảy nguồn báo, bóc tách thân bài và metadata, tải tài liệu đính kèm, tóm tắt "
         "và phân loại bằng LLM cục bộ, lưu vào SQLite có khử trùng lặp hai lớp và đồng bộ lên Lark Base "
-        "theo lô.",
+        "theo lô. Ngoài ra hệ thống có giao diện web demo và cơ chế cá nhân hóa dựa trên hồ sơ và phản "
+        "hồi thích/không thích.",
     )
     body(
         doc,
         "Về mặt kỹ thuật, ba kết quả đáng chú ý. Thứ nhất, kiến trúc phân tầng cho phép chạy toàn bộ "
-        "quá trình xử lý mà không cần mạng, nhờ đó 19 kiểm thử tự động chạy trong 0,2 giây. Thứ hai, "
+        "quá trình xử lý mà không cần mạng, nhờ đó 35 kiểm thử tự động chạy trong dưới 0,5 giây. Thứ hai, "
         "tác nhân AI được giới hạn trong bốn công cụ thay vì sinh mã tự do, cân bằng giữa tính linh "
         "hoạt và an toàn. Thứ ba, cơ chế dự phòng theo luật đảm bảo pipeline không bao giờ dừng vì lỗi "
         "mô hình.",
@@ -624,7 +661,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
         doc,
         ["Hướng phát triển", "Nội dung", "Giá trị"],
         [
-            ["Giao diện web", "FastAPI + React cho biên tập viên duyệt và sửa tóm tắt", "Tăng khả năng sử dụng"],
+            ["Giao diện web", "Nâng cấp bản demo: đăng nhập, nhiều hồ sơ, cho phép sửa tóm tắt", "Tăng khả năng sử dụng"],
+            ["Cá nhân hóa ngữ nghĩa", "Embedding để so độ tương đồng với các bài đã thích", "Gợi ý chính xác hơn"],
             ["Khử trùng lặp ngữ nghĩa", "Embedding + cosine similarity để gộp bài cùng sự việc", "Giảm tin lặp"],
             ["Tìm kiếm ngữ nghĩa", "Vector store cho phép hỏi đáp trên kho bài đã lưu", "Khai thác dữ liệu"],
             ["Lịch chạy tự động", "Task Scheduler/cron gọi CLI mỗi sáng", "Vận hành thực tế"],
@@ -666,13 +704,8 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
             ],
             [
                 "Trung hạn",
-                "Triển khai phát tán lên Telegram và Lark (hai kênh dễ nhất)",
-                "Đăng thành công và lưu được post_id để đối soát",
-            ],
-            [
-                "Trung hạn",
-                "Triển khai Facebook Page và Twitter/X",
-                "Có luồng phê duyệt trước khi đăng",
+                "Gửi bản tin cá nhân hóa (digest) định kỳ qua Lark",
+                "Bản tin gửi đúng lịch, có điểm phù hợp kèm theo",
             ],
             [
                 "Dài hạn",
@@ -732,10 +765,13 @@ agent.py -> (dùng lại pipeline, bọc thành 4 công cụ cho ToolCallingAgen
 │   ├── lark.py          Lark Base sink
 │   ├── agent.py         smolagents ToolCallingAgent
 │   ├── pipeline.py      điều phối
+│   ├── personalize.py   chấm điểm cá nhân hóa, học từ phản hồi
+│   ├── web.py           web demo
 │   └── cli.py           giao diện dòng lệnh
 ├── app/adapters/        rss.py, html.py
 ├── config/sources.yaml  7 nguồn tin
-├── tests/               19 kiểm thử
+├── config/profile.yaml  hồ sơ cá nhân hóa
+├── tests/               35 kiểm thử
 └── tools/build_report_docx.py""",
         "Cấu trúc thư mục dự án",
     )
@@ -751,7 +787,10 @@ python -m app.cli ingest-url https://example.vn/bai-viet
 python -m app.cli stats
 python -m app.cli recent --limit 5
 python -m app.cli export --out data/articles.jsonl
-python -m app.cli push --dry-run
+python -m app.cli --dry-run push
+python -m app.cli digest --top 5
+python -m app.cli feedback https://example.vn/bai-viet --dislike
+python -m app.web --port 8000
 python -m unittest discover -s tests -t . -v""",
         "Các lệnh thường dùng",
     )

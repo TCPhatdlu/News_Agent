@@ -65,6 +65,44 @@ CREATE TABLE IF NOT EXISTS skipped (
     created_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS source_health (
+    source               TEXT PRIMARY KEY,
+    last_ok_at           TEXT,
+    last_error_at        TEXT,
+    last_error           TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_count           INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    level       TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    delivered   TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+    article_url TEXT PRIMARY KEY,
+    model       TEXT NOT NULL,
+    vector      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS posts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    article_url  TEXT NOT NULL,
+    channel      TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    status       TEXT NOT NULL,          -- pending | approved | rejected | published | failed
+    post_id      TEXT,
+    dry_run      INTEGER NOT NULL DEFAULT 0,
+    error        TEXT,
+    created_at   TEXT NOT NULL,
+    decided_at   TEXT,
+    published_at TEXT,
+    UNIQUE (article_url, channel)
+);
+
 CREATE INDEX IF NOT EXISTS idx_articles_hash ON articles(content_hash);
 CREATE INDEX IF NOT EXISTS idx_articles_source ON articles(source);
 CREATE INDEX IF NOT EXISTS idx_articles_published ON articles(published_at);
@@ -81,7 +119,16 @@ class Store:
         self._conn.execute("PRAGMA busy_timeout = 5000")
         self._conn.execute("PRAGMA journal_mode = WAL")  # CLI and web can run together
         self._conn.executescript(SCHEMA)
+        # columns added after the first release: migrate old databases in place
+        self._ensure_column("articles", "cluster_of", "TEXT")
+        self._ensure_column("runs", "similar", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("runs", "error", "TEXT")
         self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> None:
+        names = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in names:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -128,8 +175,9 @@ class Store:
                     """
                     INSERT INTO articles (
                         url, title, source, country, language, summary, topics, sentiment,
-                        author, published_at, fetched_at, word_count, content_hash, image_url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        author, published_at, fetched_at, word_count, content_hash, image_url,
+                        cluster_of
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         article.url,
@@ -146,6 +194,7 @@ class Store:
                         article.word_count,
                         article.content_hash,
                         article.image_url,
+                        article.cluster_of,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -192,7 +241,9 @@ class Store:
 
     def pending_for_lark(self, limit: int = 100) -> list[dict]:
         rows = self._conn.execute(
-            "SELECT * FROM articles WHERE synced_at IS NULL ORDER BY id LIMIT ?", (limit,)
+            # semantic duplicates stay out of Lark: the lead article already represents the story
+            "SELECT * FROM articles WHERE synced_at IS NULL AND cluster_of IS NULL ORDER BY id LIMIT ?",
+            (limit,),
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -270,13 +321,178 @@ class Store:
         failed: int,
         documents: int,
         status: str,
+        similar: int = 0,
+        error: str | None = None,
     ) -> None:
         with self._conn:
             self._conn.execute(
                 """
                 UPDATE runs SET finished_at = ?, fetched = ?, inserted = ?, duplicates = ?,
-                                failed = ?, documents = ?, status = ?
+                                failed = ?, documents = ?, status = ?, similar = ?, error = ?
                 WHERE id = ?
                 """,
-                (finished_at, fetched, inserted, duplicates, failed, documents, status, run_id),
+                (finished_at, fetched, inserted, duplicates, failed, documents, status,
+                 similar, error, run_id),
+            )
+
+    def recent_runs(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        result = []
+        for row in rows:
+            data = dict(row)
+            data["sources"] = json.loads(data.get("sources") or "[]")
+            result.append(data)
+        return result
+
+    def stable_streak_days(self, now_iso: str) -> float | None:
+        """Days since the last run that was not fully ok (None when there are no runs)."""
+        from datetime import datetime
+
+        first = self._conn.execute("SELECT MIN(started_at) AS t FROM runs").fetchone()["t"]
+        if not first:
+            return None
+        bad = self._conn.execute(
+            "SELECT MAX(started_at) AS t FROM runs WHERE status NOT IN ('ok', 'running')"
+        ).fetchone()["t"]
+        since = datetime.fromisoformat(bad or first)
+        return max(0.0, (datetime.fromisoformat(now_iso) - since).total_seconds() / 86400)
+
+    # ---------------------------------------------------------------- source health
+    def record_source_ok(self, source: str, count: int, when: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO source_health (source, last_ok_at, consecutive_failures, last_count) "
+                "VALUES (?, ?, 0, ?) ON CONFLICT(source) DO UPDATE SET last_ok_at = excluded.last_ok_at, "
+                "consecutive_failures = 0, last_count = excluded.last_count",
+                (source, when, count),
+            )
+
+    def record_source_error(self, source: str, error: str, when: str) -> int:
+        """Returns how many runs in a row this source has now failed."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO source_health (source, last_error_at, last_error, consecutive_failures) "
+                "VALUES (?, ?, ?, 1) ON CONFLICT(source) DO UPDATE SET last_error_at = excluded.last_error_at, "
+                "last_error = excluded.last_error, consecutive_failures = consecutive_failures + 1",
+                (source, when, error[:500]),
+            )
+        row = self._conn.execute(
+            "SELECT consecutive_failures AS n FROM source_health WHERE source = ?", (source,)
+        ).fetchone()
+        return int(row["n"])
+
+    def source_health(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM source_health ORDER BY consecutive_failures DESC, source"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------------------------------------------------------------- alerts
+    def add_alert(self, level: str, message: str, delivered: str, when: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO alerts (level, message, delivered, created_at) VALUES (?, ?, ?, ?)",
+                (level, message, delivered, when),
+            )
+
+    def recent_alerts(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM alerts ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------------------------------------------------------------- semantic dedup
+    def save_embedding(self, url: str, model: str, vector: dict[int, float]) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO embeddings (article_url, model, vector) VALUES (?, ?, ?)",
+                (url, model, json.dumps(vector)),
+            )
+
+    def embeddings_since(self, model: str, since_iso: str) -> list[tuple[str, dict[int, float]]]:
+        """Vectors of lead articles (not themselves duplicates) fetched after `since_iso`."""
+        rows = self._conn.execute(
+            "SELECT e.article_url, e.vector FROM embeddings e JOIN articles a ON a.url = e.article_url "
+            "WHERE e.model = ? AND a.fetched_at >= ? AND a.cluster_of IS NULL",
+            (model, since_iso),
+        ).fetchall()
+        return [
+            (row["article_url"], {int(k): v for k, v in json.loads(row["vector"]).items()})
+            for row in rows
+        ]
+
+    def cluster_members(self) -> dict[str, list[dict]]:
+        """lead url -> other articles about the same story."""
+        groups: dict[str, list[dict]] = {}
+        for row in self._conn.execute(
+            "SELECT url, title, source, cluster_of FROM articles WHERE cluster_of IS NOT NULL"
+        ):
+            groups.setdefault(row["cluster_of"], []).append(dict(row))
+        return groups
+
+    def duplicate_ratio(self, since_iso: str) -> tuple[int, int]:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS total, SUM(cluster_of IS NOT NULL) AS dup FROM articles "
+            "WHERE fetched_at >= ?",
+            (since_iso,),
+        ).fetchone()
+        return int(row["dup"] or 0), int(row["total"] or 0)
+
+    # ---------------------------------------------------------------- publishing
+    def get_article(self, url: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM articles WHERE url = ?", (url,)).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def queue_post(self, url: str, channel: str, text: str, status: str, when: str) -> int | None:
+        """Returns the post id, or None if this article is already queued for that channel."""
+        with self._conn:
+            try:
+                cursor = self._conn.execute(
+                    "INSERT INTO posts (article_url, channel, text, status, created_at, decided_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (url, channel, text, status, when, when if status == "approved" else None),
+                )
+            except sqlite3.IntegrityError:
+                return None
+        return int(cursor.lastrowid)
+
+    def get_post(self, post_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT p.*, a.title AS article_title, a.source AS article_source FROM posts p "
+            "LEFT JOIN articles a ON a.url = p.article_url WHERE p.id = ?",
+            (post_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_posts(self, status: str | None = None, limit: int = 200) -> list[dict]:
+        sql = (
+            "SELECT p.*, a.title AS article_title, a.source AS article_source FROM posts p "
+            "LEFT JOIN articles a ON a.url = p.article_url"
+        )
+        params: list = []
+        if status:
+            sql += " WHERE p.status = ?"
+            params.append(status)
+        sql += " ORDER BY p.id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def post_counts(self) -> dict[str, int]:
+        return {
+            row["status"]: row["n"]
+            for row in self._conn.execute("SELECT status, COUNT(*) AS n FROM posts GROUP BY status")
+        }
+
+    def update_post(self, row_id: int, /, **fields) -> None:
+        # positional-only: `post_id` is also a column (the platform's id) passed in **fields
+        allowed = {"text", "status", "post_id", "dry_run", "error", "decided_at", "published_at"}
+        keys = [key for key in fields if key in allowed]
+        if not keys:
+            return
+        with self._conn:
+            self._conn.execute(
+                f"UPDATE posts SET {', '.join(f'{key} = ?' for key in keys)} WHERE id = ?",
+                [fields[key] for key in keys] + [row_id],
             )

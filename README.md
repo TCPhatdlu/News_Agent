@@ -86,6 +86,39 @@ python -m app.cli feedback <url>                 # thích (--dislike, --clear)
 python -m app.web                                # tab "Dành cho bạn" + nút 👍/👎
 ```
 
+## Cảnh báo lỗi (Error Workflow)
+
+Mỗi lượt chạy ghi sức khỏe từng nguồn (`source_health`). Hệ thống cảnh báo khi một nguồn lỗi
+`ALERT_SOURCE_FAILURES` lượt liên tiếp (mặc định 2, tránh báo động vì lỗi thoáng qua), khi đồng bộ
+Lark thất bại, khi hơn một nửa số bài trong lượt bị lỗi, hoặc khi lượt chạy bị dừng giữa chừng (lượt
+vẫn được đóng với trạng thái `error`). Cảnh báo gửi qua Telegram và/hoặc webhook Lark; chưa cấu hình
+thì ghi ra `data/outbox/alerts-*.jsonl`. Trang **Sức khỏe hệ thống** hiển thị chuỗi ngày chạy ổn
+định, tỉ lệ trùng lặp 7 ngày, nguồn đang lỗi, lượt chạy và cảnh báo (`python -m app.cli health`).
+
+## Khử trùng lặp ngữ nghĩa
+
+Ngoài trùng URL và trùng `content_hash`, mỗi bài mới được nhúng vector (mặc định vector băm n-gram,
+không cần model; hoặc `SEMANTIC_EMBEDDER=ollama`) và so cosine với các bài trong 72 giờ. Vượt
+`SEMANTIC_THRESHOLD` thì bài được gom vào tin trước đó (`articles.cluster_of`): web hiện một thẻ
+kèm "+N nguồn khác", và bài phụ không đẩy lên Lark. Ngưỡng 0,45 được chọn trên dữ liệu demo (cặp
+khác tin cao nhất 0,37; cặp viết lại cùng tin 0,54) — nên hiệu chỉnh lại khi có thêm dữ liệu.
+
+## Phát tán và duyệt bài
+
+Kênh: Telegram, Lark (IM), Facebook Page, X (Twitter). Luồng: **đưa vào hàng → duyệt → đăng →
+kiểm tra post_id**. Facebook và X mặc định cần duyệt (`PUBLISH_REQUIRE_APPROVAL`); bài chỉ được
+tính là đã đăng khi nền tảng trả về id. Kênh chưa có khóa API, hoặc khi `DRY_RUN=true`, chạy
+dry-run: ghi ra `data/outbox/publish-*.jsonl` với id `dry-…`.
+
+```bash
+python -m app.cli publish queue https://... --channel telegram --channel facebook
+python -m app.cli publish list --status pending
+python -m app.cli publish approve 3 --text "Nội dung đã sửa"
+python -m app.cli publish send all            # gửi mọi bài đã duyệt
+```
+
+Trên web: nút **Đăng lên…** ở mỗi bài, trang **Duyệt đăng** để sửa nội dung, duyệt, từ chối, đăng.
+
 ## Dữ liệu
 
 `data/news.db` (SQLite):

@@ -70,7 +70,8 @@ class PipelineTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _pipeline(self) -> Pipeline:
-        return Pipeline(self.settings, fetcher=self.fetcher, llm=MockLLM())
+        # both fixture pages share one body, so semantic dedup would (rightly) group them
+        return Pipeline(self.settings, fetcher=self.fetcher, llm=MockLLM(), deduper=False)
 
     def test_collect_inserts_articles_and_documents(self) -> None:
         pipeline = self._pipeline()

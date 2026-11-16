@@ -130,6 +130,63 @@ def cmd_feedback(args) -> int:
     return 0
 
 
+def cmd_publish(args) -> int:
+    from .publish import CHANNELS, Publisher
+
+    pipeline = _build_pipeline(args)
+    try:
+        publisher = Publisher.from_settings(pipeline.store, pipeline.settings)
+        if args.action == "queue":
+            channels = args.channel or []
+            if not channels or any(c not in CHANNELS for c in channels):
+                _print(f"can --channel trong: {', '.join(CHANNELS)}")
+                return 1
+            created = publisher.queue(args.target, channels)
+            _print(f"da tao {len(created)} bai: {created}")
+        elif args.action == "list":
+            for post in pipeline.store.list_posts(args.status):
+                mode = "live" if publisher.is_live(post["channel"]) else "dry-run"
+                _print(
+                    f"#{post['id']:<4} {post['status']:<9} {post['channel']:<9} {mode:<7} "
+                    f"{(post.get('article_title') or post['article_url'])[:60]}"
+                    + (f"  post_id={post['post_id']}" if post.get("post_id") else "")
+                )
+        elif args.action == "approve":
+            publisher.approve(int(args.target), args.text)
+            _print("da duyet")
+        elif args.action == "reject":
+            publisher.reject(int(args.target))
+            _print("da tu choi")
+        elif args.action == "send":
+            results = (
+                publisher.send_approved() if args.target == "all"
+                else [publisher.send(int(args.target))]
+            )
+            for result in results:
+                _print(json.dumps(result, ensure_ascii=False))
+            return 0 if all(r["ok"] for r in results) else 1
+    except ValueError as exc:
+        _print(f"loi: {exc}")
+        return 1
+    finally:
+        pipeline.store.close()
+    return 0
+
+
+def cmd_health(args) -> int:
+    pipeline = _build_pipeline(args)
+    try:
+        for row in pipeline.store.source_health():
+            state = "OK " if not row["consecutive_failures"] else f"LOI x{row['consecutive_failures']}"
+            _print(f"{state:<7} {row['source']:<14} ok={row['last_ok_at'] or '-'}  {row['last_error'] or ''}"[:160])
+        _print("\ncanh bao gan day:")
+        for alert in pipeline.store.recent_alerts(10):
+            _print(f"  {alert['created_at']} [{alert['level']}] {alert['message']} -> {alert['delivered']}")
+    finally:
+        pipeline.store.close()
+    return 0
+
+
 def cmd_export(args) -> int:
     pipeline = _build_pipeline(args)
     try:
@@ -218,6 +275,17 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--dislike", action="store_true")
     group.add_argument("--clear", action="store_true")
     feedback.set_defaults(func=cmd_feedback)
+
+    publish = sub.add_parser("publish", help="hang dang bai: queue/list/approve/reject/send")
+    publish.add_argument("action", choices=["queue", "list", "approve", "reject", "send"])
+    publish.add_argument("target", nargs="?", default="", help="URL (queue), id bai dang, hoac 'all' (send)")
+    publish.add_argument("--channel", action="append", help="telegram|lark|facebook|twitter (lap lai duoc)")
+    publish.add_argument("--status", help="loc khi list: pending|approved|published|failed|rejected")
+    publish.add_argument("--text", help="noi dung da sua khi approve")
+    publish.set_defaults(func=cmd_publish)
+
+    health = sub.add_parser("health", help="suc khoe nguon tin va canh bao")
+    health.set_defaults(func=cmd_health)
 
     export = sub.add_parser("export", help="xuat JSONL")
     export.add_argument("--out", default="data/articles.jsonl")

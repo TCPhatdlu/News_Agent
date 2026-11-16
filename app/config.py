@@ -77,6 +77,15 @@ def _as_bool(value: str | bool | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def get_env(key: str, default: str = "") -> str:
+    """Read an optional setting from the process env or .env (used by alert/publish channels)."""
+    return _env(_load_env_file(PROJECT_ROOT / ".env"), key, default)
+
+
+def get_env_list(key: str, default: str = "") -> list[str]:
+    return [item.strip().lower() for item in get_env(key, default).split(",") if item.strip()]
+
+
 def load_settings(overrides: dict[str, object] | None = None) -> Settings:
     env = _load_env_file(PROJECT_ROOT / ".env")
     overrides = overrides or {}

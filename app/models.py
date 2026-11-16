@@ -75,7 +75,9 @@ class Article:
     word_count: int
     content_hash: str
     image_url: str | None = None
-    documents: list[DocumentRecord] = field(default_factory=list) 
+    documents: list[DocumentRecord] = field(default_factory=list)
+    # URL of the earlier article covering the same story (semantic duplicate), else None
+    cluster_of: str | None = None
 
     @property
     def topics_text(self) -> str:
