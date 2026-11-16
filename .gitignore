@@ -2,8 +2,22 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+# bi mat / cau hinh ca nhan
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials*.json
+token*.json
+
+# du lieu, bao cao va tai lieu (khong dua len GitHub)
 data/
+docs/
+*.docx
+*.pdf
+*.jsonl
 *.db
 *.sqlite3
 .pytest_cache/
